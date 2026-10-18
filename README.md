@@ -20,6 +20,38 @@ Order books change thousands of times a second. Behaviours such as spoofing, lay
 4. **Scale and score** with `StandardScaler` + `IsolationForest` (200 trees).
 5. **Review** flagged moments on the dashboard, and **evaluate** against the planted labels.
 
+## How it works
+
+**1. From a snapshot to numbers.** The model cannot read a raw order book, so each snapshot is turned into 12 numbers (features) that describe whether something odd is happening: how one-sided the buy and sell quantities are, how wide the spread is, how jumpy the price has been, and so on. The core one is order flow imbalance:
+
+```
+OFI = (bid qty - ask qty) / (bid qty + ask qty)      # -1 = all sellers, 0 = balanced, +1 = all buyers
+```
+
+Rolling features (volatility, z-score, ratios to a recent average) need history, so the first few rows of each run are dropped as warm-up.
+
+**2. Scaling.** Features live on very different scales, so each one is standardised, `z = (x - mean) / std`, to stop large-valued features dominating.
+
+**3. Scoring with an Isolation Forest.** The model makes many random cuts through the feature space. A point that is unusual gets alone after only a few cuts; a typical point needs many. The average number of cuts becomes the anomaly score:
+
+```
+score(x) = 2 ^ ( -E[path length of x] / c(n) )      # close to 1 = unusual, about 0.5 = normal
+```
+
+No labels are used at any point, which is why the method suits a problem with no public fraud data.
+
+**4. Flagging.** Every row gets a score. The `contamination` setting only decides where to draw the line: the highest-scoring rows are flagged (`is_anomaly_pred = 1`).
+
+**5. Evaluating without real labels.** We plant known anomalies (spoofing, liquidity vacuum, one-sided imbalance) in synthetic and real data, so every affected row is marked in an answer key. The detector never sees the key while fitting. Afterwards we compare flags with the key:
+
+```
+precision = TP / (TP + FP)      recall = TP / (TP + FN)      F1 = 2PR / (P + R)
+```
+
+**6. Scaling up.** The same features are written twice: pandas for small data and Apache Spark window functions for the 300,000-row run. The first large run scored only F1 0.383; adding the ratio features and raising `max_samples` to 4,096 lifted it to 0.811.
+
+**7. Reviewing.** The dashboard shows flagged snapshots on the price and OFI charts, so a person can judge each one in context.
+
 ## Features
 
 | # | Feature | Meaning |
@@ -138,6 +170,18 @@ python dashboard.py
 
 Script arguments and file names may differ in your copy; check each script's header.
 
+## Data
+
+Small files are included in the repo: the real BTC/USDT snapshots (`data/BTCUSDT_orderbook.csv`, 584 rows) and the result file for the real run (`output/real_with_injected_results.csv`).
+
+The 300,000-row synthetic dataset, its features file and `output/large_scale_anomaly_results.csv` are **not** stored in the repo because of their size (GitHub rejects files over 100 MB). Regenerate them with:
+
+```bash
+python generate_synthetic_data_large.py
+```
+
+The random seed is fixed (42), so the data is identical on every run. The `.gitignore` in this repo keeps the large files out.
+
 ## Detector settings
 
 | Setting | Value |
@@ -176,4 +220,3 @@ Script arguments and file names may differ in your copy; check each script's hea
 ## Disclaimer
 
 This is an academic project. It is not financial advice and not a legal or regulatory determination of fraud.
-
